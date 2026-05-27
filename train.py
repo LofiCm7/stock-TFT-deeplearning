@@ -7,6 +7,7 @@ from model import CompetitionTFT
 from dataset import StockDataset
 from data_loader import build_merged_dataset
 from feature_engine import build_features, DYNAMIC_FEATURES, STATIC_FEATURES
+from plot import plot_training_curves
 import config
 
 
@@ -122,6 +123,7 @@ def main():
     patience_counter = 0
     os.makedirs(config.CACHE_DIR, exist_ok=True)
     model_path = os.path.join(config.CACHE_DIR, "best_model.pt")
+    history = {'train_loss': [], 'val_loss': [], 'ic': [], 'icir': []}
 
     for epoch in range(config.EPOCHS):
         train_loss = train_one_epoch(
@@ -129,6 +131,11 @@ def main():
         val_loss, val_ic, val_icir = evaluate(
             model, val_loader, criterion, device, val_ds)
         scheduler.step()
+
+        history['train_loss'].append(train_loss)
+        history['val_loss'].append(val_loss)
+        history['ic'].append(val_ic)
+        history['icir'].append(val_icir)
 
         lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch+1:02d} | "
@@ -148,6 +155,7 @@ def main():
                 print("Early stopping.")
                 break
 
+    plot_training_curves(history)
     print(f"\nTraining done. Best IC: {best_ic:.4f}")
     print(f"Model saved to: {model_path}")
 

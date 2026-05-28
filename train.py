@@ -65,16 +65,14 @@ def compute_direction_accuracy(predictions, targets, dates):
 
 
 def gated_feature_loss(pred, gate_weights, target):
-    """Gated multi-feature variance loss.
+    """Gated multi-feature loss with per-feature target variance normalization."""
+    per_feature_mse = (pred - target) ** 2  # (B, F)
+    feat_scale = (target ** 2).mean(dim=0).clamp(min=1e-6)  # (F,)
+    norm_mse = per_feature_mse / feat_scale
 
-    pred: (B, N_features) predicted next-step features
-    gate_weights: (B, N_features) learned per-feature importance (sum=1)
-    target: (B, N_features) actual next-step features
-    """
-    per_feature_var = (pred - target) ** 2
-    weighted_loss = (gate_weights * per_feature_var).sum(dim=-1)
+    weighted_loss = (gate_weights * norm_mse).sum(dim=-1)
     entropy = -(gate_weights * torch.log(gate_weights + 1e-8)).sum(dim=-1)
-    return weighted_loss.mean() - 0.01 * entropy.mean()
+    return weighted_loss.mean() - 0.05 * entropy.mean()
 
 
 def train_one_epoch(model, loader, optimizer, device,
@@ -211,7 +209,7 @@ def main():
         optimizer, T_max=config.EPOCHS)
 
     close_idx = avail_features.index('close')
-    best_ic = -np.inf
+    best_val_loss = np.inf
     patience_counter = 0
     os.makedirs(config.CACHE_DIR, exist_ok=True)
     model_path = os.path.join(config.CACHE_DIR, "best_model.pt")
@@ -244,8 +242,8 @@ def main():
               f"DirAcc: {val_dir_acc:.4f} | "
               f"LR: {lr:.2e}")
 
-        if val_ic > best_ic:
-            best_ic = val_ic
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             patience_counter = 0
             torch.save({
                 'state_dict': model.state_dict(),
@@ -263,7 +261,7 @@ def main():
                     'STATIC_CONTINUOUS': STATIC_CONTINUOUS,
                 },
             }, model_path)
-            print(f"  -> Saved best model (IC={best_ic:.4f})")
+            print(f"  -> Saved best model (val_loss={best_val_loss:.6f})")
         else:
             patience_counter += 1
             if patience_counter >= config.PATIENCE:
@@ -286,7 +284,7 @@ def main():
         avg_gate = gate_w.cpu().numpy().mean(axis=0)
     plot_feature_importance(avg_gate, avail_features)
 
-    print(f"\nTraining done. Best IC: {best_ic:.4f}")
+    print(f"\nTraining done. Best val_loss: {best_val_loss:.6f}")
     print(f"Model saved to: {model_path}")
 
 

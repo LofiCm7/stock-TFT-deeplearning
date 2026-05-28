@@ -253,7 +253,7 @@ class CompetitionTFT(nn.Module):
 
 
 class PortfolioPolicy(nn.Module):
-    def __init__(self, hidden_dim, n_bins=6, n_extra_state=4, dropout=0.1):
+    def __init__(self, hidden_dim, n_bins=6, n_extra_state=6, dropout=0.1):
         super().__init__()
         input_dim = hidden_dim + n_extra_state
         self.head_open = nn.Sequential(

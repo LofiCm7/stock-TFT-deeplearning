@@ -114,54 +114,58 @@ def run_backtest(encoder, policy, env, obs_cache, device):
         print("No valid test dates found.")
         return None
 
-    test_date_set = set(test_dates)
-    env.reset(start_date_idx=test_dates[0])
     nav_history = []
+    ep_start = 0
     step = 0
 
-    while not env.current_idx >= len(env.dates):
-        date_idx = env.current_idx
-        if date_idx > test_dates[-1]:
-            break
-        if date_idx not in test_date_set:
-            env.current_idx += 1
-            continue
+    while ep_start < len(test_dates):
+        start_idx = test_dates[ep_start]
+        ep_end = min(ep_start + config.EPISODE_LEN, len(test_dates))
+        env.reset(start_date_idx=start_idx, episode_len=config.EPISODE_LEN)
 
-        date = env.dates[date_idx]
-        done = False
+        for day_offset in range(ep_end - ep_start):
+            date_idx = env.current_idx
+            if date_idx >= len(env.dates):
+                break
+            date = env.dates[date_idx]
+            done = False
 
-        for phase in ["open", "close"]:
-            dyn_t, stat_t, mask_t = obs_cache.get_obs(date_idx, env, device)
-            port_state = build_port_state(env, device)
+            for phase in ["open", "close"]:
+                dyn_t, stat_t, mask_t = obs_cache.get_obs(
+                    date_idx, env, device)
+                port_state = build_port_state(env, device)
 
-            enc = encoder(dyn_t, stat_t)
-            dist = policy(enc, port_state, mask_t, env.phase)
-            action = dist.probs.argmax(dim=-1)
+                enc = encoder(dyn_t, stat_t)
+                dist = policy(enc, port_state, mask_t, env.phase)
+                action = dist.probs.argmax(dim=-1)
 
-            weights = bins[action].cpu().numpy()
-            top_k_idx = np.argsort(weights)[-config.N_HOLD:]
-            target_w = np.zeros(env.n_stocks)
-            for idx in top_k_idx:
-                target_w[idx] = weights[idx]
-            w_sum = target_w.sum()
-            if w_sum > 0:
-                target_w = target_w / w_sum
+                weights = bins[action].cpu().numpy()
+                top_k_idx = np.argsort(weights)[-config.N_HOLD:]
+                target_w = np.zeros(env.n_stocks)
+                for idx in top_k_idx:
+                    target_w[idx] = weights[idx]
+                w_sum = target_w.sum()
+                if w_sum > 0:
+                    target_w = target_w / w_sum
 
-            state, reward, done, info = env.step(target_w)
+                state, reward, done, info = env.step(target_w)
+                if done:
+                    break
+
+            nav = info['nav']
+            prev_nav = nav_history[-1]['nav'] if nav_history else \
+                config.INIT_CAPITAL
+            day_ret = (nav / prev_nav) - 1 if prev_nav > 0 else 0.0
+            nav_history.append({'date': date, 'nav': nav, 'return': day_ret})
+
+            if step % 20 == 0:
+                print(f"  [{step}/{len(test_dates)}] {date} NAV={nav:,.0f}")
+            step += 1
+
             if done:
                 break
 
-        nav = info['nav']
-        prev_nav = nav_history[-1]['nav'] if nav_history else config.INIT_CAPITAL
-        day_ret = (nav / prev_nav) - 1 if prev_nav > 0 else 0.0
-        nav_history.append({'date': date, 'nav': nav, 'return': day_ret})
-
-        if step % 20 == 0:
-            print(f"  [{step}/{len(test_dates)}] {date} NAV={nav:,.0f}")
-        step += 1
-
-        if done:
-            break
+        ep_start = ep_end
 
     return pd.DataFrame(nav_history)
 

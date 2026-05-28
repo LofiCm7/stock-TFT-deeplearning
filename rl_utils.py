@@ -94,7 +94,7 @@ def get_obs_for_date(grouped, avail_features, date_idx, env, seq_len, device):
 
 
 def build_port_state(env, device):
-    """Build portfolio state tensor [N_stocks, 4]."""
+    """Build portfolio state tensor [N_stocks, 6]."""
     prices = env.get_valuation_prices()
     nav = env._compute_nav(prices)
     n = env.n_stocks
@@ -106,5 +106,11 @@ def build_port_state(env, device):
     lock_frac = (lock_val / (nav + 1e-8)).astype(np.float32)
     prev_w = env.prev_weights.astype(np.float32)
 
-    state = np.stack([cash_frac, hold_frac, lock_frac, prev_w], axis=-1)
+    ep_len = getattr(env, 'episode_len', config.EPISODE_LEN)
+    ep_day = getattr(env, 'episode_day', 0)
+    ep_progress = np.full(n, ep_day / max(ep_len, 1), dtype=np.float32)
+    is_last = np.full(n, float(ep_day >= ep_len - 1), dtype=np.float32)
+
+    state = np.stack([cash_frac, hold_frac, lock_frac, prev_w,
+                      ep_progress, is_last], axis=-1)
     return torch.tensor(state, device=device)

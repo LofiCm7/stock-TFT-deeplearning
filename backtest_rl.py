@@ -6,6 +6,7 @@ import torch
 import config
 from data_loader import build_merged_dataset
 from feature_engine import build_features, DYNAMIC_FEATURES, STATIC_FEATURES
+from feature_engine import STATIC_CATEGORICAL, STATIC_CONTINUOUS
 from model import TFTEncoder, PortfolioPolicy, DiffusionDenoiser
 from env import AShareTradingEnv
 from plot import plot_backtest_nav
@@ -55,7 +56,9 @@ def load_rl_model(device, avail_features):
                          hidden_dim=config.HIDDEN_DIM,
                          seq_len=config.SEQ_LEN,
                          num_heads=config.NUM_HEADS,
-                         dropout=config.DROPOUT).to(device)
+                         dropout=config.DROPOUT,
+                         static_categorical=STATIC_CATEGORICAL,
+                         static_n_continuous=len(STATIC_CONTINUOUS)).to(device)
     policy = PortfolioPolicy(config.HIDDEN_DIM, n_bins=config.N_BINS,
                              n_extra_state=4, dropout=config.DROPOUT).to(device)
 

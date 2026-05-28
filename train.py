@@ -7,6 +7,7 @@ from model import CompetitionTFT, DiffusionDenoiser
 from dataset import StockDataset
 from data_loader import build_merged_dataset
 from feature_engine import build_features, DYNAMIC_FEATURES, STATIC_FEATURES
+from feature_engine import STATIC_CATEGORICAL, STATIC_CONTINUOUS
 from plot import plot_training_curves
 import config
 
@@ -183,6 +184,8 @@ def main():
         seq_len=config.SEQ_LEN,
         num_heads=config.NUM_HEADS,
         dropout=config.DROPOUT,
+        static_categorical=STATIC_CATEGORICAL,
+        static_n_continuous=len(STATIC_CONTINUOUS),
     ).to(device)
 
     denoiser = None
@@ -255,6 +258,8 @@ def main():
                     'DROPOUT': config.DROPOUT,
                     'DYNAMIC_FEATURES': avail_features,
                     'STATIC_FEATURES': list(STATIC_FEATURES),
+                    'STATIC_CATEGORICAL': STATIC_CATEGORICAL,
+                    'STATIC_CONTINUOUS': STATIC_CONTINUOUS,
                 },
             }, model_path)
             print(f"  -> Saved best model (IC={best_ic:.4f})")

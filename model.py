@@ -92,6 +92,43 @@ class DiffusionDenoiser(nn.Module):
         return x_t.reshape(B, self.seq_len, self.feature_dim)
 
 
+class StaticEmbedding(nn.Module):
+    """Embed categorical static features + project continuous ones to hidden_dim."""
+
+    def __init__(self, categorical_cardinalities, n_continuous,
+                 embed_dim=16, hidden_dim=128):
+        super().__init__()
+        self.n_categorical = len(categorical_cardinalities)
+        self.n_continuous = n_continuous
+        self.embed_dim = embed_dim
+
+        self.embeddings = nn.ModuleList([
+            nn.Embedding(card, embed_dim)
+            for card in categorical_cardinalities.values()
+        ])
+
+        total_input = self.n_categorical * embed_dim + n_continuous
+        self.proj = nn.Sequential(
+            nn.Linear(total_input, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+        )
+
+    def forward(self, static_x):
+        cat_embeds = []
+        for i, emb in enumerate(self.embeddings):
+            cat_embeds.append(emb(static_x[:, i].long()))
+        cat_concat = torch.cat(cat_embeds, dim=-1)
+
+        if self.n_continuous > 0:
+            cont = static_x[:, self.n_categorical:]
+            combined = torch.cat([cat_concat, cont], dim=-1)
+        else:
+            combined = cat_concat
+
+        return self.proj(combined)
+
+
 class GatedResidualNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim=None, dropout=0.1):
         super().__init__()
@@ -168,14 +205,20 @@ class VariableSelectionNetwork(nn.Module):
 
 class TFTEncoder(nn.Module):
     def __init__(self, dynamic_input_dim, static_input_dim, hidden_dim=64,
-                 seq_len=60, num_heads=4, dropout=0.1, denoiser=None):
+                 seq_len=60, num_heads=4, dropout=0.1, denoiser=None,
+                 static_categorical=None, static_n_continuous=0):
         super().__init__()
         self.seq_len = seq_len
         self.hidden_dim = hidden_dim
         self.denoiser = denoiser
 
         self.dynamic_embedding = nn.Linear(1, hidden_dim)
-        self.static_embedding = nn.Linear(static_input_dim, hidden_dim)
+        if static_categorical is not None:
+            self.static_embedding = StaticEmbedding(
+                static_categorical, static_n_continuous,
+                embed_dim=config.STATIC_EMBED_DIM, hidden_dim=hidden_dim)
+        else:
+            self.static_embedding = nn.Linear(static_input_dim, hidden_dim)
         self.pos_embedding = nn.Embedding(seq_len, hidden_dim)
 
         self.static_encoder = GatedResidualNetwork(hidden_dim, hidden_dim)
@@ -232,11 +275,14 @@ class TFTEncoder(nn.Module):
 
 class CompetitionTFT(nn.Module):
     def __init__(self, dynamic_input_dim, static_input_dim, hidden_dim=64,
-                 seq_len=60, num_heads=4, dropout=0.1):
+                 seq_len=60, num_heads=4, dropout=0.1,
+                 static_categorical=None, static_n_continuous=0):
         super().__init__()
         self.dynamic_input_dim = dynamic_input_dim
         self.encoder = TFTEncoder(dynamic_input_dim, static_input_dim,
-                                  hidden_dim, seq_len, num_heads, dropout)
+                                  hidden_dim, seq_len, num_heads, dropout,
+                                  static_categorical=static_categorical,
+                                  static_n_continuous=static_n_continuous)
         self.fc_out = nn.Linear(hidden_dim, dynamic_input_dim)
         self.feature_gate = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),

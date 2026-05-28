@@ -3,7 +3,7 @@ import numpy as np
 import torch
 
 import config
-from feature_engine import STATIC_FEATURES
+from feature_engine import STATIC_FEATURES, STATIC_CATEGORICAL, STATIC_CONTINUOUS
 from dataset import rolling_normalize_window
 
 
@@ -17,11 +17,15 @@ class ObsCache:
         self.n_stocks = len(env.codes)
         self.n_dates = len(env.dates)
 
+        cat_features = list(STATIC_CATEGORICAL.keys())
+
         self.dynamic_matrix = np.full(
             (self.n_stocks, self.n_dates, self.n_feat), np.nan,
             dtype=np.float32)
-        self.static_arr = np.zeros(
-            (self.n_stocks, len(STATIC_FEATURES)), dtype=np.float32)
+        self.static_cat_arr = np.zeros(
+            (self.n_stocks, len(cat_features)), dtype=np.float32)
+        self.stock_age_matrix = np.zeros(
+            (self.n_stocks, self.n_dates), dtype=np.float32)
         self.valid_start = np.full(self.n_stocks, self.n_dates, dtype=np.int32)
 
         date_to_idx = env.date_to_idx
@@ -29,13 +33,16 @@ class ObsCache:
             if code not in grouped.groups:
                 continue
             stock_df = grouped.get_group(code)
-            self.static_arr[i] = stock_df[STATIC_FEATURES].iloc[0].values
+            self.static_cat_arr[i] = stock_df[cat_features].iloc[0].values
             dates = stock_df['trade_date'].values
             data = stock_df[avail_features].values.astype(np.float32)
+            ages = stock_df['stock_age'].values.astype(np.float32) \
+                if 'stock_age' in stock_df.columns else np.zeros(len(stock_df))
             for row_idx, d in enumerate(dates):
                 if d in date_to_idx:
                     di = date_to_idx[d]
                     self.dynamic_matrix[i, di] = data[row_idx]
+                    self.stock_age_matrix[i, di] = ages[row_idx]
             first_valid = np.where(
                 ~np.isnan(self.dynamic_matrix[i, :, 0]))[0]
             if len(first_valid) >= seq_len:
@@ -56,8 +63,12 @@ class ObsCache:
         normalized[~valid] = 0.0
         mask_arr = valid & ~env.suspended[date_idx]
 
+        stock_ages = self.stock_age_matrix[:, date_idx:date_idx + 1]
+        stat_full = np.concatenate(
+            [self.static_cat_arr, stock_ages], axis=-1)
+
         dyn_t = torch.tensor(normalized, device=device)
-        stat_t = torch.tensor(self.static_arr, device=device)
+        stat_t = torch.tensor(stat_full, device=device)
         mask_t = torch.tensor(mask_arr, device=device, dtype=torch.bool)
         return dyn_t, stat_t, mask_t
 

@@ -71,12 +71,13 @@ def gated_feature_loss(pred, gate_weights, target):
     target: (B, N_features) actual next-step features
     """
     per_feature_var = (pred - target) ** 2
-    weighted_loss = (gate_weights.detach() * per_feature_var).sum(dim=-1)
-    return weighted_loss.mean()
+    weighted_loss = (gate_weights * per_feature_var).sum(dim=-1)
+    entropy = -(gate_weights * torch.log(gate_weights + 1e-8)).sum(dim=-1)
+    return weighted_loss.mean() - 0.01 * entropy.mean()
 
 
 def train_one_epoch(model, loader, optimizer, device,
-                    denoiser=None, denoiser_optimizer=None):
+                    denoiser=None, denoiser_optimizer=None, scaler=None):
     model.train()
     if denoiser:
         denoiser.train()
@@ -89,18 +90,28 @@ def train_one_epoch(model, loader, optimizer, device,
         optimizer.zero_grad()
         if denoiser_optimizer:
             denoiser_optimizer.zero_grad()
-        pred, gate_weights = model(x_dyn, x_stat)
-        loss = gated_feature_loss(pred, gate_weights, y)
-        if denoiser is not None:
-            d_loss = denoiser.compute_loss(x_dyn)
-            combined = loss + config.LAMBDA_DENOISE * d_loss
+        with torch.amp.autocast('cuda', enabled=scaler is not None):
+            pred, gate_weights = model(x_dyn, x_stat)
+            loss = gated_feature_loss(pred, gate_weights, y)
+            if denoiser is not None:
+                d_loss = denoiser.compute_loss(x_dyn)
+                combined = loss + config.LAMBDA_DENOISE * d_loss
+            else:
+                combined = loss
+        if scaler is not None:
+            scaler.scale(combined).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            if denoiser_optimizer:
+                scaler.step(denoiser_optimizer)
+            scaler.update()
         else:
-            combined = loss
-        combined.backward()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
-        if denoiser_optimizer:
-            denoiser_optimizer.step()
+            combined.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            if denoiser_optimizer:
+                denoiser_optimizer.step()
         total_loss += loss.item() * len(y)
         n += len(y)
     return total_loss / n
@@ -204,10 +215,13 @@ def main():
     history = {'train_loss': [], 'val_loss': [], 'ic': [], 'icir': [],
                 'dir_acc': []}
 
+    use_amp = device.type == 'cuda'
+    scaler = torch.amp.GradScaler('cuda') if use_amp else None
+
     for epoch in range(config.EPOCHS):
         train_loss = train_one_epoch(
             model, train_loader, optimizer, device,
-            denoiser, denoiser_optimizer)
+            denoiser, denoiser_optimizer, scaler)
         val_loss, val_ic, val_icir, val_dir_acc = evaluate(
             model, val_loader, device, val_ds, close_idx)
         scheduler.step()

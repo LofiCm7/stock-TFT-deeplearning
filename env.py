@@ -47,10 +47,12 @@ class AShareTradingEnv:
             has_pre = ~np.isnan(pre_vals)
             self.pre_close_prices[di[has_pre], si[has_pre]] = pre_vals[has_pre]
 
-        for j in range(self.n_stocks):
-            for i in range(1, n_dates):
-                if np.isnan(self.pre_close_prices[i, j]):
-                    self.pre_close_prices[i, j] = self.close_prices[i - 1, j]
+        mask = np.isnan(self.pre_close_prices)
+        mask[0, :] = False
+        shifted_close = np.empty_like(self.pre_close_prices)
+        shifted_close[0, :] = np.nan
+        shifted_close[1:, :] = self.close_prices[:-1, :]
+        self.pre_close_prices = np.where(mask, shifted_close, self.pre_close_prices)
 
     # === PLACEHOLDER_ENV_METHODS ===
 

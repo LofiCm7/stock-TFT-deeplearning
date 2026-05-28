@@ -115,25 +115,54 @@ class GatedResidualNetwork(nn.Module):
         return self.layer_norm(x)
 
 
+class BatchedVariableGRN(nn.Module):
+    """Batched GRN that processes all variables in parallel via einsum."""
+
+    def __init__(self, num_vars, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.num_vars = num_vars
+        self.hidden_dim = hidden_dim
+        self.fc1_weight = nn.Parameter(torch.empty(num_vars, hidden_dim, hidden_dim))
+        self.fc1_bias = nn.Parameter(torch.zeros(num_vars, hidden_dim))
+        self.fc2_weight = nn.Parameter(torch.empty(num_vars, hidden_dim, hidden_dim))
+        self.fc2_bias = nn.Parameter(torch.zeros(num_vars, hidden_dim))
+        self.gate_weight = nn.Parameter(torch.empty(num_vars, hidden_dim, hidden_dim))
+        self.gate_bias = nn.Parameter(torch.zeros(num_vars, hidden_dim))
+        self.layer_norm = nn.LayerNorm(hidden_dim)
+        self.dropout = nn.Dropout(dropout)
+        self._init_weights()
+
+    def _init_weights(self):
+        for w in [self.fc1_weight, self.fc2_weight, self.gate_weight]:
+            for i in range(self.num_vars):
+                nn.init.xavier_uniform_(w.data[i])
+
+    def forward(self, x):
+        residual = x
+        x = F.elu(x)
+        x = torch.einsum('bsvh,vhd->bsvd', x, self.fc1_weight) + self.fc1_bias
+        x = self.dropout(F.elu(x))
+        x = torch.einsum('bsvh,vhd->bsvd', x, self.fc2_weight) + self.fc2_bias
+        gate = torch.sigmoid(
+            torch.einsum('bsvh,vhd->bsvd', x, self.gate_weight) + self.gate_bias)
+        x = gate * x + (1 - gate) * residual
+        return self.layer_norm(x)
+
+
 class VariableSelectionNetwork(nn.Module):
     def __init__(self, num_vars, hidden_dim, dropout=0.1):
         super().__init__()
         self.joint_grn = GatedResidualNetwork(
             num_vars * hidden_dim, hidden_dim,
             output_dim=num_vars, dropout=dropout)
-        self.variable_grns = nn.ModuleList([
-            GatedResidualNetwork(hidden_dim, hidden_dim, dropout=dropout)
-            for _ in range(num_vars)
-        ])
+        self.batched_grn = BatchedVariableGRN(num_vars, hidden_dim, dropout)
 
     def forward(self, x):
         batch, seq_len, num_vars, hidden_dim = x.shape
         flat_x = x.reshape(batch, seq_len, -1)
         weights = self.joint_grn(flat_x)
         weights = F.softmax(weights, dim=-1).unsqueeze(-1)
-        processed = torch.stack(
-            [grn(x[..., i, :]) for i, grn in enumerate(self.variable_grns)],
-            dim=-2)
+        processed = self.batched_grn(x)
         return torch.sum(processed * weights, dim=-2)
 
 
@@ -168,9 +197,14 @@ class TFTEncoder(nn.Module):
 
         if self.denoiser is not None:
             with torch.no_grad():
+                t_start = config.DENOISE_T_START
+                sqrt_ac = self.denoiser.sqrt_alpha_cumprod[t_start]
+                sqrt_omac = self.denoiser.sqrt_one_minus_alpha_cumprod[t_start]
+                noise = torch.randn_like(dynamic_x)
+                x_noisy = sqrt_ac * dynamic_x + sqrt_omac * noise
                 denoised = self.denoiser.denoise(
-                    dynamic_x,
-                    t_start=config.DENOISE_T_START,
+                    x_noisy,
+                    t_start=t_start,
                     n_steps=config.DENOISE_STEPS,
                 )
             dynamic_x = denoised.detach()

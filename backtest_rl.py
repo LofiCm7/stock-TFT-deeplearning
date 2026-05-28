@@ -114,21 +114,28 @@ def run_backtest(encoder, policy, env, obs_cache, device):
         print("No valid test dates found.")
         return None
 
+    test_date_set = set(test_dates)
     env.reset(start_date_idx=test_dates[0])
     nav_history = []
+    step = 0
 
-    for step, date_idx in enumerate(test_dates):
+    while not env.current_idx >= len(env.dates):
+        date_idx = env.current_idx
+        if date_idx > test_dates[-1]:
+            break
+        if date_idx not in test_date_set:
+            env.current_idx += 1
+            continue
+
         date = env.dates[date_idx]
-        env.current_idx = date_idx
-
         done = False
+
         for phase in ["open", "close"]:
-            env.phase = phase
             dyn_t, stat_t, mask_t = obs_cache.get_obs(date_idx, env, device)
             port_state = build_port_state(env, device)
 
             enc = encoder(dyn_t, stat_t)
-            dist = policy(enc, port_state, mask_t, phase)
+            dist = policy(enc, port_state, mask_t, env.phase)
             action = dist.probs.argmax(dim=-1)
 
             weights = bins[action].cpu().numpy()
@@ -151,6 +158,7 @@ def run_backtest(encoder, policy, env, obs_cache, device):
 
         if step % 20 == 0:
             print(f"  [{step}/{len(test_dates)}] {date} NAV={nav:,.0f}")
+        step += 1
 
         if done:
             break

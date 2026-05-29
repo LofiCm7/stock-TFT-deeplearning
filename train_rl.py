@@ -10,7 +10,7 @@ from feature_engine import STATIC_CATEGORICAL, STATIC_CONTINUOUS
 from model import TFTEncoder, PortfolioPolicy, DiffusionDenoiser
 from env import AShareTradingEnv
 from grpo_trainer import GRPOTrainer
-from rl_utils import get_obs_for_date, build_port_state, ObsCache
+from rl_utils import build_port_state, ObsCache
 from plot import plot_rl_reward_curve
 
 

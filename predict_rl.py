@@ -10,7 +10,7 @@ from feature_engine import build_features, DYNAMIC_FEATURES, STATIC_FEATURES
 from feature_engine import STATIC_CATEGORICAL, STATIC_CONTINUOUS
 from model import TFTEncoder, PortfolioPolicy, DiffusionDenoiser
 from env import AShareTradingEnv
-from rl_utils import get_obs_for_date, build_port_state, ObsCache
+from rl_utils import build_port_state, ObsCache
 
 
 def main():

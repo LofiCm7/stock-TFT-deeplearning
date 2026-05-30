@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from torch.utils.checkpoint import checkpoint
 import config
 
 
@@ -257,6 +258,15 @@ class TFTEncoder(nn.Module):
                 )
             dynamic_x = denoised.detach()
 
+        if self.training:
+            return checkpoint(
+                self._forward_body, dynamic_x, static_x,
+                use_reentrant=False)
+        else:
+            return self._forward_body(dynamic_x, static_x)
+
+    def _forward_body(self, dynamic_x, static_x):
+        seq_len = dynamic_x.shape[1]
         embedded_dynamic = self.dynamic_embedding(dynamic_x.unsqueeze(-1))
         selected_features = self.vsn(embedded_dynamic)
 

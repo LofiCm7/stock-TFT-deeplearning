@@ -1,5 +1,6 @@
 import os
 import random
+import time
 import numpy as np
 import torch
 
@@ -139,6 +140,7 @@ def main():
     print("Training encoder + policy end-to-end with GRPO from scratch.")
     best_reward = -np.inf
     reward_history = []
+    t_start = time.time()
 
     for step in range(config.RL_STEPS):
         start_idx = random.choice(valid_starts)
@@ -151,11 +153,15 @@ def main():
 
         reward_history.append(metrics['mean_reward'])
         if step % 10 == 0:
+            elapsed = time.time() - t_start
+            speed = (step + 1) / elapsed if elapsed > 0 else 0
+            eta = (config.RL_STEPS - step - 1) / speed if speed > 0 else 0
             print(f"Episode {step}/{config.RL_STEPS} | "
                   f"loss={metrics['loss']:.4f} | "
                   f"mean_reward={metrics['mean_reward']:.6f} | "
                   f"best_reward={metrics['best_reward']:.6f} | "
-                  f"kl={metrics['kl']:.4f}")
+                  f"kl={metrics['kl']:.4f} | "
+                  f"{speed:.2f} ep/s | ETA {eta/60:.1f}min")
 
         window = reward_history[-100:]
         avg_reward = np.mean(window)
@@ -184,6 +190,9 @@ def main():
             }, save_path)
 
     print(f"Training done. Best avg reward (100-step): {best_reward:.6f}")
+    total_time = time.time() - t_start
+    print(f"Total training time: {total_time/60:.1f} min "
+          f"({total_time/config.RL_STEPS:.2f} s/episode)")
     print(f"Model saved to {os.path.join(config.CACHE_DIR, 'best_rl_policy.pt')}")
     plot_rl_reward_curve(reward_history)
 

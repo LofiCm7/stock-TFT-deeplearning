@@ -69,6 +69,10 @@ WARMUP_LR = 1e-3
 LAMBDA_AUX = 0.05
 LAMBDA_BENCHMARK = 0.5
 
+# ====== 诊断开关（默认不影响原算法）======
+DIAG_INTERVAL = 10       # 每多少个 update 打印一次诊断指标；设 0 关闭
+DIAG_SMOKE_TEST = False  # True 时用合成奖励测试 RL 管线（需手动开启）
+
 # ====== Diffusion Denoiser 超参 ======
 USE_DIFFUSION_DENOISER = True
 DIFFUSION_T = 200

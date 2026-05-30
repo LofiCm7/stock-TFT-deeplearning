@@ -1,5 +1,6 @@
 import os
 import random
+import time
 import numpy as np
 import torch
 
@@ -10,7 +11,7 @@ from feature_engine import STATIC_CATEGORICAL, STATIC_CONTINUOUS
 from model import TFTEncoder, PortfolioPolicy, DiffusionDenoiser
 from env import AShareTradingEnv
 from grpo_trainer import GRPOTrainer
-from rl_utils import get_obs_for_date, build_port_state, ObsCache
+from rl_utils import build_port_state, ObsCache
 from plot import plot_rl_reward_curve
 
 
@@ -37,67 +38,30 @@ def build_env(df):
     return env
 
 
-def load_pretrained_encoder(encoder, device, dynamic_dim, avail_features):
-    ckpt_path = os.path.join(config.CACHE_DIR, "best_model.pt")
+def load_denoiser(device, dynamic_dim):
+    """Load pretrained denoiser and freeze it."""
+    if not config.USE_DIFFUSION_DENOISER:
+        return None
+    ckpt_path = os.path.join(config.CACHE_DIR, "denoiser_pretrained.pt")
     if not os.path.exists(ckpt_path):
-        print(f"WARNING: {ckpt_path} not found, using random init")
-        return
+        print(f"WARNING: {ckpt_path} not found. Running without denoiser.")
+        return None
     state = torch.load(ckpt_path, map_location=device, weights_only=False)
-
-    saved_cfg = state.get('config', {})
-    for key, cur in {'HIDDEN_DIM': config.HIDDEN_DIM,
-                     'SEQ_LEN': config.SEQ_LEN,
-                     'NUM_HEADS': config.NUM_HEADS}.items():
-        saved = saved_cfg.get(key)
-        if saved is not None and saved != cur:
-            raise ValueError(
-                f"Config mismatch: checkpoint {key}={saved}, "
-                f"current {key}={cur}. Retrain or fix config.py.")
-
-    saved_features = saved_cfg.get('DYNAMIC_FEATURES')
-    if saved_features is not None and saved_features != avail_features:
-        missing = set(saved_features) - set(avail_features)
-        extra = set(avail_features) - set(saved_features)
-        raise ValueError(
-            f"Feature mismatch between checkpoint and current data.\n"
-            f"  Missing from current: {missing}\n"
-            f"  Extra in current: {extra}\n"
-            f"  Retrain or ensure data sources match.")
-
-    encoder_state = {}
-    sd = state.get('state_dict', state)
-    for k, v in sd.items():
-        if k.startswith("encoder."):
-            encoder_state[k[len("encoder."):]] = v
-        elif not k.startswith("fc_out") and not k.startswith("feature_gate"):
-            encoder_state[k] = v
-    encoder.load_state_dict(encoder_state, strict=False)
-    print("Loaded pretrained encoder weights.")
-
-    has_denoiser_in_ckpt = state.get('denoiser_state') is not None
-    if config.USE_DIFFUSION_DENOISER and not has_denoiser_in_ckpt:
-        print("WARNING: USE_DIFFUSION_DENOISER=True but checkpoint has no "
-              "denoiser_state. Denoiser will NOT be loaded.")
-    if not config.USE_DIFFUSION_DENOISER and has_denoiser_in_ckpt:
-        print("WARNING: USE_DIFFUSION_DENOISER=False but checkpoint contains "
-              "denoiser_state. Denoiser will be skipped.")
-
-    if config.USE_DIFFUSION_DENOISER and has_denoiser_in_ckpt:
-        denoiser = DiffusionDenoiser(
-            feature_dim=dynamic_dim,
-            seq_len=config.SEQ_LEN,
-            hidden_dim=config.DIFFUSION_HIDDEN_DIM,
-            time_dim=config.DIFFUSION_TIME_DIM,
-            n_timesteps=config.DIFFUSION_T,
-            beta_start=config.DIFFUSION_BETA_START,
-            beta_end=config.DIFFUSION_BETA_END,
-        ).to(device)
-        denoiser.load_state_dict(state['denoiser_state'])
-        denoiser.eval()
-        for p in denoiser.parameters():
-            p.requires_grad = False
-        encoder.denoiser = denoiser
-        print("Loaded pretrained denoiser.")
+    denoiser = DiffusionDenoiser(
+        feature_dim=dynamic_dim,
+        seq_len=config.SEQ_LEN,
+        hidden_dim=config.DIFFUSION_HIDDEN_DIM,
+        time_dim=config.DIFFUSION_TIME_DIM,
+        n_timesteps=config.DIFFUSION_T,
+        beta_start=config.DIFFUSION_BETA_START,
+        beta_end=config.DIFFUSION_BETA_END,
+    ).to(device)
+    denoiser.load_state_dict(state['denoiser_state'])
+    denoiser.eval()
+    for p in denoiser.parameters():
+        p.requires_grad = False
+    print("Loaded and froze pretrained denoiser.")
+    return denoiser
 
 
 def randomize_portfolio_state(env, date_idx):
@@ -150,10 +114,14 @@ def main():
                          dropout=config.DROPOUT,
                          static_categorical=STATIC_CATEGORICAL,
                          static_n_continuous=len(STATIC_CONTINUOUS)).to(device)
-    load_pretrained_encoder(encoder, device, dynamic_dim, avail_features)
+
+    denoiser = load_denoiser(device, dynamic_dim)
+    if denoiser is not None:
+        encoder.denoiser = denoiser
 
     policy = PortfolioPolicy(config.HIDDEN_DIM, n_bins=config.N_BINS,
-                             n_extra_state=6, dropout=config.DROPOUT).to(device)
+                             n_extra_state=config.N_EXTRA_STATE,
+                             dropout=config.DROPOUT).to(device)
 
     trainer = GRPOTrainer(encoder, policy, env, device=device)
 
@@ -169,8 +137,10 @@ def main():
 
     print(f"RL training for {config.RL_STEPS} episodes "
           f"({len(valid_starts)} valid starts)...")
+    print("Training encoder + policy end-to-end with GRPO from scratch.")
     best_reward = -np.inf
     reward_history = []
+    t_start = time.time()
 
     for step in range(config.RL_STEPS):
         start_idx = random.choice(valid_starts)
@@ -183,11 +153,15 @@ def main():
 
         reward_history.append(metrics['mean_reward'])
         if step % 10 == 0:
+            elapsed = time.time() - t_start
+            speed = (step + 1) / elapsed if elapsed > 0 else 0
+            eta = (config.RL_STEPS - step - 1) / speed if speed > 0 else 0
             print(f"Episode {step}/{config.RL_STEPS} | "
                   f"loss={metrics['loss']:.4f} | "
                   f"mean_reward={metrics['mean_reward']:.6f} | "
                   f"best_reward={metrics['best_reward']:.6f} | "
-                  f"kl={metrics['kl']:.4f}")
+                  f"kl={metrics['kl']:.4f} | "
+                  f"{speed:.2f} ep/s | ETA {eta/60:.1f}min")
 
         window = reward_history[-100:]
         avg_reward = np.mean(window)
@@ -207,6 +181,7 @@ def main():
                     'N_BINS': config.N_BINS,
                     'BINS': config.BINS,
                     'N_HOLD': config.N_HOLD,
+                    'N_EXTRA_STATE': config.N_EXTRA_STATE,
                     'EPISODE_LEN': config.EPISODE_LEN,
                     'MAX_CASH': config.MAX_CASH,
                     'USE_DIFFUSION_DENOISER': config.USE_DIFFUSION_DENOISER,
@@ -215,6 +190,9 @@ def main():
             }, save_path)
 
     print(f"Training done. Best avg reward (100-step): {best_reward:.6f}")
+    total_time = time.time() - t_start
+    print(f"Total training time: {total_time/60:.1f} min "
+          f"({total_time/config.RL_STEPS:.2f} s/episode)")
     print(f"Model saved to {os.path.join(config.CACHE_DIR, 'best_rl_policy.pt')}")
     plot_rl_reward_curve(reward_history)
 
